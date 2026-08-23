@@ -206,10 +206,31 @@ def _open_app(text: str) -> SpeakResult | None:
     if not m:
         return None
     app = m.group(1).strip()
-    blocked = ("browser", "the")  # 'open browser' handled by generic launch too — fine
     app_clean = app.replace("the ", "").strip()
     if not app_clean:
         return None
+
+    # Protocol-backed apps the Start Menu index misses.
+    protocol_aliases = {
+        "microsoft store": "ms-windows-store://",
+        "msstore": "ms-windows-store://",
+        "store": "ms-windows-store://",
+        "settings": "ms-settings:",
+        "calculator": "calculator:",
+    }
+    for name, protocol in protocol_aliases.items():
+        if app_clean == name or (name in app_clean and len(app_clean) <= len(name) + 4):
+            os.startfile(protocol)  # noqa: S606
+            time.sleep(2.5)
+            from evo.automation.desktop_agent import PYWINAUTO_ADAPTER
+
+            probe = "WindowsStore" if name == "microsoft store" else app_clean.split()[0]
+            verified = bool(PYWINAUTO_ADAPTER.find_windows_by_app(probe))
+            return SpeakResult(
+                f"{app_clean.title()} is open." if verified
+                else f"I launched {app_clean} but couldn't verify its window — check your taskbar."
+            )
+
     from evo.automation.desktop_agent import PYWINAUTO_ADAPTER
 
     result = PYWINAUTO_ADAPTER.launch_app(app_clean, reuse_existing=True)
@@ -226,11 +247,67 @@ def _search_web(text: str) -> SpeakResult | None:
     from evo.automation import browser_agent
 
     summary = browser_agent.search_web(query)
-    first_line = next((ln for ln in summary.splitlines() if ln.strip()), "no results parsed")
-    return SpeakResult(
-        f"Top result for {query}: {first_line.strip()} Full page is open in the automation browser.",
-        meta={"query": query},
-    )
+    if "no structured results parsed" in summary.lower():
+        # Bing sometimes serves an interstitial 'Loading' page — fall back to DDG.
+        try:
+            browser_agent.navigate(f"https://html.duckduckgo.com/html/?q={urllib.parse.quote_plus(query)}")
+            page = browser_agent.read(max_chars=1200)
+            body = page.get("text", "")
+            if body:
+                summary = f"Top result for {query}: {body[:260]} Full page is open in the automation browser."
+            else:
+                summary = f"I opened the search but couldn't parse results for '{query}'."
+        except Exception as exc:
+            summary = f"Search failed: {exc}"
+    else:
+        first_line = next((ln for ln in summary.splitlines() if ln.strip()), "no results parsed")
+        summary = f"Top result for {query}: {first_line.strip()} Full page is open in the automation browser."
+    return SpeakResult(summary, meta={"query": query})
+
+
+_YT_FIRST_VIDEO_SELECTORS = (
+    "ytd-video-renderer a#video-title",
+    "ytd-item-section-renderer a#video-title",
+    "a#video-title-link",
+)
+
+
+def _youtube(text: str) -> SpeakResult | None:
+    """Handle explicit YouTube flows: open+search(+play first), search youtube, play X."""
+    t = text.strip()
+    lower = t.lower()
+    want_play = bool(re.search(r"\bthen play\b|\bplay (the )?first\b|\bplay it\b", lower))
+
+    query = None
+    m = re.search(r"(?:open\s+|go\s+to\s+)?youtube(?:\.com)?\s*(?:and|&|,)?\s*(?:then\s+)?search(?:\s+for)?\s+(.+?)(?:\s+then\s+.*|$)", t, re.IGNORECASE)
+    if not m:
+        m = re.search(r"search\s+(?:on\s+)?youtube\s+(?:for\s+)?(.+?)(?:\s+then\s+.*|$)", t, re.IGNORECASE)
+    if not m:
+        m = re.search(r"play\s+(.+?)\s+on\s+youtube", t, re.IGNORECASE)
+    if m and m.group(1):
+        query = m.group(1).strip(" ?!.")
+    elif re.fullmatch(r"(?:open\s+)?(?:go to\s+)?youtube[.!]?", lower):
+        query = ""
+    if query is None:
+        return None
+
+    from evo.automation import browser_agent
+
+    if not query:
+        browser_agent.navigate("https://www.youtube.com")
+        return SpeakResult("YouTube is open.")
+    browser_agent.navigate(f"https://www.youtube.com/results?search_query={urllib.parse.quote_plus(query)}")
+    if not want_play:
+        return SpeakResult(f"YouTube results for {query} are open.")
+    for selector in _YT_FIRST_VIDEO_SELECTORS:
+        try:
+            browser_agent.click(selector)
+            return SpeakResult(f"Playing the first {query} video.")
+        except LookupError:
+            continue
+        except Exception:
+            break
+    return SpeakResult(f"Results for {query} are open — say 'play the first video' once it loads.")
 
 
 def _play_music(text: str) -> SpeakResult | None:
@@ -583,6 +660,7 @@ _HANDLERS = [
     _notes,
     _set_city,
     _close_app,
+    _youtube,      # before _open_app/_search_web: multi-step YouTube flows win
     _open_app,
     _search_web,
     _maps,

@@ -8,6 +8,7 @@ Every turn is stored in memory_store so Ziggler remembers the conversation.
 from __future__ import annotations
 
 from evo.core import intents, llm_client, memory_store
+from evo.core import money_mode
 
 
 def _memory_context() -> str:

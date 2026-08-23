@@ -1,32 +1,32 @@
 {
   "topic": "Canva",
   "slug": "canva",
-  "created_at": 1787512168.6092818,
+  "created_at": 1787516106.2512512,
   "steps": [
     {
       "n": 1,
-      "action": "Sign up or log in to Canva.",
-      "detail": "Access your Canva account."
+      "action": "Log in to Canva",
+      "detail": "Open Canva.com and enter your credentials."
     },
     {
       "n": 2,
-      "action": "Select a template.",
-      "detail": "Choose a pre-designed template from Canva's library."
+      "action": "Select a template",
+      "detail": "Navigate to the homepage and choose a template that suits your needs."
     },
     {
       "n": 3,
-      "action": "Edit the template.",
-      "detail": "Drag and drop elements, add text, and adjust layout."
+      "action": "Customize the template",
+      "detail": "Drag and drop elements, change colors, and add text to personalize your design."
     },
     {
       "n": 4,
-      "action": "Save your design.",
-      "detail": "Click 'Save' to keep your work."
+      "action": "Save or export your design",
+      "detail": "Click on the 'Save' icon and choose how to export your design (PDF, PNG, JPEG, etc.)."
     },
     {
       "n": 5,
-      "action": "Export your design.",
-      "detail": "Choose the desired format and download your design."
+      "action": "Publish your design",
+      "detail": "Optionally, share your design directly from Canva or export it to other platforms like email, social media, or Google Drive."
     }
   ],
   "shortcuts": [],
