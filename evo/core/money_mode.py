@@ -39,10 +39,12 @@ def _score(job_title: str, job_desc: str, skills: list[str]) -> int:
     return sum(1 for s in skills if s in blob)
 
 
-def scan(max_leads: int = 8) -> list[dict]:
-    """Fetch remote-job feeds, score against configured skills, persist top leads."""
+def scan(max_leads: int = 8) -> tuple[list[dict], list[str]]:
+    """Fetch remote-job feeds, score against configured skills, persist top leads.
+    Returns (leads, feed_errors) so 'offline' never masquerades as 'no leads'."""
     skills = get_skills()
     candidates: list[dict] = []
+    feed_errors: list[str] = []
     try:
         data = json.loads(_fetch(FEEDS["remotive"]))
         for job in data.get("jobs", []):
@@ -53,8 +55,11 @@ def scan(max_leads: int = 8) -> list[dict]:
                 "snippet": re.sub(r"<[^>]+>", " ", job.get("description", ""))[:220].strip(),
                 "source": "remotive",
             })
-    except Exception:
-        pass
+    except Exception as exc:
+        import logging
+
+        logging.getLogger("ziggler.money").warning("feed %s failed: %s", "remotive", exc)
+        feed_errors.append(f"remotive: {exc}")
 
     scored = []
     seen_titles = set()
@@ -73,7 +78,7 @@ def scan(max_leads: int = 8) -> list[dict]:
         memory_store.set_preference(
             "money_leads", json.dumps({"updated": time.time(), "leads": top})
         )
-    return top
+    return top, feed_errors
 
 
 def current_leads() -> list[dict]:
@@ -84,7 +89,13 @@ def current_leads() -> list[dict]:
 
 
 def report() -> str:
-    leads = scan() or current_leads()
+    leads, feed_errors = scan()
+    leads = leads or current_leads()
+    if not leads and feed_errors:
+        return (
+            "I couldn't scan right now — the job feeds are unreachable. "
+            "Check the connection and say 'money report' again."
+        )
     if not leads:
         return (
             "No matching leads right now. Tell me your skills with "

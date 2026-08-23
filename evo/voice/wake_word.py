@@ -1,7 +1,6 @@
 """Wake-word loop: "Ziggler" (or "Jarvis") -> capture command -> dispatch."""
 from __future__ import annotations
 
-import time
 
 WAKE_WORDS = ("ziggler", "jarvis")
 

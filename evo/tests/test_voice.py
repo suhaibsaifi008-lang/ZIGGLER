@@ -1,6 +1,5 @@
 """Phase G: TTS synthesizes real audio; wake-word matcher logic; STT pipeline
 present. Microphone loops stay manual (can't be asserted in CI)."""
-import re
 from pathlib import Path
 
 import pytest

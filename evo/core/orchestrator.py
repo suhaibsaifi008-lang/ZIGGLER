@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
 
 from evo.core.action_schema import Action, GoalResult
 

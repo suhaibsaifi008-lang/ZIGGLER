@@ -1,5 +1,4 @@
 """Money mode: lead scanning, scoring, persistence, and command routing."""
-import json
 
 from evo.core import memory_store, money_mode
 
@@ -32,4 +31,5 @@ def test_report_with_no_network_is_honest(monkeypatch, tmp_path):
 
     monkeypatch.setattr(money_mode, "_fetch", dead_fetch)
     out = money_mode.report()
-    assert ("No matching leads" in out) or ("opportunities" in out)
+    # EVO-108: offline must say 'unreachable', never masquerade as 'no leads'
+    assert "unreachable" in out.lower()

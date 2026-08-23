@@ -30,7 +30,10 @@ def speak(text: str, voice: str = VOICE, block: bool = True) -> bool:
     """Speak text aloud. Returns True when playback started/completed."""
     try:
         path = synthesize_to_file(text, voice=voice)
-    except Exception:
+    except Exception as exc:
+        import logging
+
+        logging.getLogger("ziggler.tts").warning("synthesize failed: %s", exc)
         return False
 
     def _play_windows() -> None:

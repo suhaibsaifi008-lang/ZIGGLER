@@ -135,7 +135,16 @@ class ZigglerHandler(BaseHTTPRequestHandler):
                 return self._send_json({"reply": reply, "backend": "ziggler-pipeline"})
             if path == "/api/goal":
                 from evo.core.orchestrator import handle_goal
+                from evo.core.permissions import check
 
+                plan = payload.get("context", {}).get("plan") or []
+                kinds = {a.get("kind") for a in plan if isinstance(a, dict)}
+                denied = [k for k in kinds if not check(k)]
+                if denied:
+                    return self._send_json(
+                        {"error": f"permission tier forbids: {', '.join(sorted(denied))}"},
+                        status=403,
+                    )
                 result = handle_goal(payload.get("goal", ""), payload.get("context") or {})
                 return self._send_json(
                     {
@@ -145,8 +154,15 @@ class ZigglerHandler(BaseHTTPRequestHandler):
                     }
                 )
             return self._send_json({"error": f"unknown path {path}"}, status=404)
-        except Exception as exc:
-            self._send_json({"error": f"{type(exc).__name__}: {exc}"}, status=500)
+        except Exception:
+            # Friendly surface text; details go to the server log, not the chat UI.
+            import logging
+
+            logging.getLogger("ziggler.webui").exception("handler error on %s", path)
+            self._send_json(
+                {"error": "Something went wrong running that. Check the Ziggler log for details."},
+                status=500,
+            )
 
     # -------------------------------------------------------------- helpers
     @staticmethod

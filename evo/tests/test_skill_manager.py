@@ -19,7 +19,7 @@ def _backend_ready() -> bool:
 @pytest.mark.skipif(not _backend_ready(), reason="no LLM backend available")
 def test_canva_learn_and_apply_acceptance():
     manager = SkillManager()
-    skill = manager.learn("Canva")
+    manager.learn("Canva")
 
     workflow_path = LIBRARY_ROOT / "canva" / "workflow.json"
     assert workflow_path.exists(), "workflow.json must exist after learn()"

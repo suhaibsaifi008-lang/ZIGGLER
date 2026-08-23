@@ -21,8 +21,20 @@ def _load() -> dict[str, Any]:
         return {"facts": {}, "preferences": {}, "history": [], "reminders": []}
     try:
         data = json.loads(_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {"facts": {}, "preferences": {}, "history": [], "reminders": []}
+    except json.JSONDecodeError as exc:
+        # Corrupt store: preserve the bad file for recovery instead of losing it.
+        import logging
+        import shutil
+
+        backup = _PATH.with_suffix(".corrupt")
+        shutil.copy2(_PATH, backup)
+        logging.getLogger("ziggler.memory").error(
+            "memory.json was unreadable (%s); backed up to %s and starting fresh", exc, backup
+        )
+        data = {}
+    for key, default in (("facts", {}), ("preferences", {}), ("history", []), ("reminders", [])):
+        data.setdefault(key, default)
+    return data
     for key, default in (("facts", {}), ("preferences", {}), ("history", []), ("reminders", [])):
         data.setdefault(key, default)
     return data

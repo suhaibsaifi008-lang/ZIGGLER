@@ -11,6 +11,7 @@ import re
 import time
 from pathlib import Path
 
+from evo.core.action_schema import GoalResult  # noqa: F401 (used in apply() annotation)
 from evo.core.llm_client import LLMRouter, LLMError
 
 LIBRARY_ROOT = Path(__file__).resolve().parent / "library"

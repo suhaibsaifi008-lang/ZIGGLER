@@ -7,6 +7,7 @@ front-ends behave identically.
 from __future__ import annotations
 
 import datetime as _dt
+import difflib
 import json
 import os
 import re
@@ -17,6 +18,73 @@ import urllib.request
 from pathlib import Path
 
 from evo.core import memory_store
+
+# ------------------------------------------------------------------ normalization
+
+_VERB_ALIASES = {
+    "open": "open", "launch": "open", "start": "open", "run": "open",
+    "close": "close", "kill": "close", "quit": "close", "exit": "close",
+    "play": "play", "pause": "pause", "resume": "pause",
+    "search": "search", "google": "search", "find": "find", "locate": "find",
+    "remind": "remind", "timer": "timer",
+    "note": "note", "notes": "note",
+    "define": "define", "weather": "weather",
+    "summarize": "summarize", "summarise": "summarize",
+    "screenshot": "screenshot", "volume": "volume", "brightness": "brightness",
+}
+
+_KNOWN_APPS = [
+    "notepad", "calculator", "calc", "paint", "mspaint", "settings", "camera", "clock",
+    "word", "excel", "powershell", "cmd", "explorer", "file explorer", "brave",
+    "microsoft edge", "edge", "chrome", "spotify", "microsoft store", "msstore", "store",
+]
+
+_CONNECTORS = re.compile(
+    r"\s+(?:and\s+(?:then\s+)?|then\s+|after\s+that\s+,?\s*|afterwards\s+,?\s*)", re.IGNORECASE
+)
+
+
+def _normalize(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip())
+
+
+def _correct_verb(first_word: str) -> str:
+    """Fuzzy-correct a leading verb ('opne' -> 'open'); identity if close enough.
+    Cutoff 0.7 catches transposition typos ('opne'=0.75) while staying safe:
+    the corrected word must still be a known verb."""
+    lower = first_word.lower().strip(",.!?")
+    if lower in _VERB_ALIASES:
+        return lower
+    match = difflib.get_close_matches(lower, _VERB_ALIASES.keys(), n=1, cutoff=0.7)
+    return match[0] if match else lower
+
+
+def _correct_app(token: str) -> str:
+    lower = token.lower().strip()
+    if lower in _KNOWN_APPS:
+        return lower
+    match = difflib.get_close_matches(lower, _KNOWN_APPS, n=1, cutoff=0.8)
+    return match[0] if match else token
+
+
+def _split_subcommands(text: str) -> list[str]:
+    """Split chained commands: 'open notepad and type hello' -> ['open notepad',
+    'type hello']. Only splits when both sides look like verb-initial commands,
+    so normal sentences containing 'and' stay intact."""
+    parts = _CONNECTORS.split(text)
+    if len(parts) < 2:
+        return [_normalize(text)]
+    out = []
+    for part in parts:
+        part = part.strip()
+        words = part.split()
+        if not words:
+            continue
+        corrected = _correct_verb(words[0])
+        if corrected != words[0].lower().strip(",.!?"):
+            part = " ".join([corrected] + words[1:])
+        out.append(part)
+    return out
 
 
 class SpeakResult:
@@ -111,10 +179,18 @@ def _recall(text: str) -> SpeakResult | None:
         return None
     query = m.group(1).strip(" ?!")
     hits = memory_store.search_facts(query)
-    if not hits:
-        return SpeakResult(f"I don't have anything stored about '{query}'.")
-    best_key = min(hits, key=lambda k: len(k))
-    return SpeakResult(f"{best_key}: {hits[best_key]}")
+    if hits:
+        best_key = min(hits, key=lambda k: len(k))
+        return SpeakResult(f"{best_key}: {hits[best_key]}")
+    # also check saved notes (EVO-117 UX gap)
+    try:
+        notes = json.loads(memory_store.get_preference("notes", "[]"))
+    except json.JSONDecodeError:
+        notes = []
+    matches = [n["text"] for n in notes if query.lower() in n["text"].lower()][:3]
+    if matches:
+        return SpeakResult("From your notes: " + " | ".join(matches))
+    return SpeakResult(f"I don't have anything stored about '{query}'.")
 
 
 def _remind(text: str) -> SpeakResult | None:
@@ -162,10 +238,6 @@ def _system_status(text: str) -> SpeakResult | None:
 def _screenshot(text: str) -> SpeakResult | None:
     if "screenshot" not in text.lower():
         return None
-    from evo.automation.desktop_agent import PYWINAUTO_ADAPTER
-    import ctypes
-
-    user32 = ctypes.windll.user32
     out_dir = os.path.join(os.environ.get("USERPROFILE", "."), "Pictures", "Ziggler")
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, f"screenshot_{int(time.time())}.png")
@@ -202,12 +274,18 @@ def _volume(text: str) -> SpeakResult | None:
 
 
 def _open_app(text: str) -> SpeakResult | None:
-    m = re.search(r"\b(?:open|launch|start)\s+([a-z0-9 ]+)", text.lower())
+    m = re.match(r"(?:open|launch|start|run)\s+([a-z0-9 ]+)", text.lower())  # anchored
     if not m:
         return None
     app = m.group(1).strip()
-    app_clean = app.replace("the ", "").strip()
-    if not app_clean:
+    app_clean = _correct_app(app.replace("the ", "").strip())
+    # Guard EVO-103: if the 'app name' still contains connector/verb words, this
+    # is an un-decomposed sentence — refuse to treat it as a literal app name.
+    if not app_clean or re.search(
+        r"\b(and|then|type|search|play|write|with|that|after|for me|please)\b", app_clean
+    ):
+        return None
+    if len(app_clean.split()) > 4:
         return None
 
     # Protocol-backed apps the Start Menu index misses.
@@ -236,15 +314,27 @@ def _open_app(text: str) -> SpeakResult | None:
     result = PYWINAUTO_ADAPTER.launch_app(app_clean, reuse_existing=True)
     if result.get("success"):
         return SpeakResult(f"{app_clean.title()} is open.")
-    return SpeakResult(f"I couldn't open {app_clean}: {result.get('error', 'unknown reason')}")
+    import logging
+
+    logging.getLogger("ziggler.intents").info(
+        "launch_app(%s) failed: %s", app_clean, result.get("error")
+    )
+    return SpeakResult(
+        f"I couldn't open {app_clean} — it may not be installed. "
+        f"Details: {result.get('error', 'unknown reason')}"
+    )
 
 
 def _search_web(text: str) -> SpeakResult | None:
-    m = re.search(r"(?:search(?: the web)?(?: for)?|google)\s+(.+)", text, re.IGNORECASE)
+    m = re.match(r"(?:search(?: the web)?(?: for)?|google)\s+(.+)", text, re.I)  # anchored
     if not m:
         return None
     query = m.group(1).strip(" ?!")
     from evo.automation import browser_agent
+
+    def _is_bot_challenge(s: str) -> bool:
+        s = s.lower()
+        return ("bot" in s and "challenge" in s) or "captcha" in s or "unusual traffic" in s
 
     summary = browser_agent.search_web(query)
     if "no structured results parsed" in summary.lower():
@@ -253,15 +343,30 @@ def _search_web(text: str) -> SpeakResult | None:
             browser_agent.navigate(f"https://html.duckduckgo.com/html/?q={urllib.parse.quote_plus(query)}")
             page = browser_agent.read(max_chars=1200)
             body = page.get("text", "")
-            if body:
+            if _is_bot_challenge(body):
+                summary = (
+                    f"The search engines are throwing bot-checks at automation right now, "
+                    f"so I can't quote results for '{query}'. The query is open in your "
+                    f"automation browser window — or ask me again in a minute."
+                )
+            elif body:
                 summary = f"Top result for {query}: {body[:260]} Full page is open in the automation browser."
             else:
                 summary = f"I opened the search but couldn't parse results for '{query}'."
         except Exception as exc:
+            import logging
+
+            logging.getLogger("ziggler.intents").warning("ddg fallback failed: %s", exc)
             summary = f"Search failed: {exc}"
     else:
-        first_line = next((ln for ln in summary.splitlines() if ln.strip()), "no results parsed")
-        summary = f"Top result for {query}: {first_line.strip()} Full page is open in the automation browser."
+        first_line = next((ln for ln in summary.splitlines() if ln.strip()), "")
+        if _is_bot_challenge(first_line):
+            summary = (
+                f"Bing answered with a bot-check instead of results for '{query}'. "
+                f"Try again shortly, or tell me to open {query} directly on a site."
+            )
+        else:
+            summary = f"Top result for {query}: {first_line.strip()} Full page is open in the automation browser."
     return SpeakResult(summary, meta={"query": query})
 
 
@@ -282,6 +387,9 @@ def _youtube(text: str) -> SpeakResult | None:
     m = re.search(r"(?:open\s+|go\s+to\s+)?youtube(?:\.com)?\s*(?:and|&|,)?\s*(?:then\s+)?search(?:\s+for)?\s+(.+?)(?:\s+then\s+.*|$)", t, re.IGNORECASE)
     if not m:
         m = re.search(r"search\s+(?:on\s+)?youtube\s+(?:for\s+)?(.+?)(?:\s+then\s+.*|$)", t, re.IGNORECASE)
+    if not m:
+        # 'search for X on youtube' / 'look up X on youtube'
+        m = re.search(r"(?:search(?:ing)?(?:\s+for)?|look\s+up)\s+(.+?)\s+on\s+youtube(?:\s+then\s+.*|$)", t, re.IGNORECASE)
     if not m:
         m = re.search(r"play\s+(.+?)\s+on\s+youtube", t, re.IGNORECASE)
     if m and m.group(1):
@@ -305,13 +413,18 @@ def _youtube(text: str) -> SpeakResult | None:
             return SpeakResult(f"Playing the first {query} video.")
         except LookupError:
             continue
-        except Exception:
+        except Exception as exc:
+            import logging
+
+            logging.getLogger("ziggler.intents").warning(
+                "youtube click(%s) failed: %s", selector, exc
+            )
             break
     return SpeakResult(f"Results for {query} are open — say 'play the first video' once it loads.")
 
 
 def _play_music(text: str) -> SpeakResult | None:
-    m = re.search(r"(?:play|put on)\s+(.+?)(?:\s+on youtube)?[.?!]?$", text, re.IGNORECASE)
+    m = re.match(r"(?:play|put on)\s+(.+?)(?:\s+on\s+youtube)?[.?!]?$", text, re.I)  # anchored
     if not m:
         return None
     what = m.group(1).strip(" ?!")
@@ -319,9 +432,7 @@ def _play_music(text: str) -> SpeakResult | None:
 
     browser_agent.navigate(f"https://www.youtube.com/results?search_query={urllib.parse.quote_plus(what)}")
     try:
-        from evo.automation import browser_agent as ba
-
-        ba.click("ytd-video-renderer a#video-title")
+        browser_agent.click(_YT_FIRST_VIDEO_SELECTORS[0])
         return SpeakResult(f"Playing {what}.")
     except LookupError:
         return SpeakResult(f"Search results for {what} are open — pick one.")
@@ -528,7 +639,7 @@ def _brightness(text: str) -> SpeakResult | None:
 
 
 def _maps(text: str) -> SpeakResult | None:
-    m = re.search(r"(?:directions to|navigate to|route to|map of)\s+(.+)", text, re.IGNORECASE)
+    m = re.match(r"(?:directions to|navigate to|route to|map of)\s+(.+)", text, re.I)  # anchored
     if not m:
         return None
     place = m.group(1).strip(" ?!")
@@ -539,7 +650,7 @@ def _maps(text: str) -> SpeakResult | None:
 
 
 def _summarize(text: str) -> SpeakResult | None:
-    m = re.search(r"(?:summarize|summarise|tldr|summary of)\s+(\S+://\S+)", text, re.IGNORECASE)
+    m = re.match(r"(?:summarize|summarise|tldr|summary of)\s+(\S+://\S+)", text, re.I)  # anchored
     if not m:
         return None
     url = m.group(1)
@@ -559,7 +670,7 @@ def _summarize(text: str) -> SpeakResult | None:
 
 
 def _close_app(text: str) -> SpeakResult | None:
-    m = re.search(r"\b(?:close|kill|quit)\s+([a-z0-9 ]+)", text.lower())
+    m = re.match(r"(?:close|kill|quit)\s+([a-z0-9 ]+)", text.lower())  # anchored
     if not m or any(word in m.group(1) for word in ("window", "tab")):
         return None
     app = m.group(1).replace("the ", "").strip()
@@ -578,10 +689,10 @@ def _close_app(text: str) -> SpeakResult | None:
 
 
 def _find_file(text: str) -> SpeakResult | None:
-    m = re.search(r"\b(?:find|locate)\s+(?:the )?(?:file|document|pdf|photo) called?\s+(.+)", text, re.IGNORECASE) or \
-        re.search(r"\bfind\s+(?:file\s+)?(.+)", text, re.IGNORECASE)
+    m = (re.search(r"\b(?:find|locate)\s+(?:the\s+)?(?:file|document|pdf|photo)\s+(?:called|named)\s+(.+)", text, re.IGNORECASE)
+         or re.search(r"\bfind\s+(?:the\s+)?file\s+(.+)", text, re.IGNORECASE))
     if not m:
-        return None
+        return None  # bare 'find ...' sentences go to the LLM instead of filename search
     needle = m.group(1).strip(" ?!").lower()
     roots = [Path.home() / "Desktop", Path.home() / "Documents", Path.home() / "Downloads"]
     hits: list[Path] = []
@@ -638,6 +749,8 @@ class SpeakTimer(SpeakResult):
         self.delay = delay
 
 
+_COMPOUND_HANDLERS = [_youtube]
+
 _HANDLERS = [
     _time_date,
     _weather,
@@ -672,14 +785,62 @@ _HANDLERS = [
 
 
 def handle_command(text: str) -> SpeakResult | None:
-    """Return a SpeakResult when a rule-based intent matched, else None."""
+    """Return a SpeakResult when a rule-based intent matched, else None.
+
+    Pipeline: normalize -> wake-strip -> COMPOUND intents (own their internal
+    chaining, e.g. YouTube flows) -> generic sub-command splitting -> fuzzy
+    verbs/apps -> dispatch per sub-command. Any unmatched sub-command aborts
+    the chain to the LLM (never executes a half-understood plan).
+    """
     cleaned = (text or "").strip()
-    if cleaned.lower().startswith(("hey ziggler", "ziggler")):
-        cleaned = re.sub(r"^(hey )?ziggler[,!]?\s*", "", cleaned, flags=re.IGNORECASE)
+    if cleaned.lower().startswith(("hey ziggler", "ziggler", "hey jarvis", "jarvis")):
+        cleaned = re.sub(r"^(hey )?(ziggler|jarvis)[,! ]*\s*", "", cleaned, flags=re.IGNORECASE)
+    if not cleaned:
+        return None
+
+    # Compound handlers own phrases whose connectors are part of the intent.
+    for compound in _COMPOUND_HANDLERS:
+        try:
+            result = compound(cleaned)
+        except Exception as exc:
+            import logging
+
+            logging.getLogger("ziggler.intents").warning(
+                "compound %s failed: %s", compound.__name__, exc
+            )
+            result = SpeakResult(f"That command failed: {exc}")
+        if result is not None:
+            return result
+
+    subcommands = _split_subcommands(cleaned)
+    results: list[SpeakResult] = []
+    for sub in subcommands:
+        words = sub.split()
+        if words:
+            corrected = _correct_verb(words[0])
+            if corrected != words[0].lower().strip(",.!?"):
+                sub = " ".join([corrected] + words[1:])
+        result = _dispatch_single(sub)
+        if result is None:
+            return None  # whole chain is conversational / unknown
+        results.append(result)
+    combined = " ".join(r.text for r in results)
+    meta: dict = {}
+    for r in results:
+        meta.update(r.meta)
+    return SpeakResult(combined, actioned=True, meta=meta)
+
+
+def _dispatch_single(text: str) -> SpeakResult | None:
     for handler in _HANDLERS:
         try:
-            result = handler(cleaned)
+            result = handler(text)
         except Exception as exc:
+            import logging
+
+            logging.getLogger("ziggler.intents").warning(
+                "handler %s failed on %r: %s", handler.__name__, text[:80], exc
+            )
             result = SpeakResult(f"That command failed: {exc}")
         if result:
             return result

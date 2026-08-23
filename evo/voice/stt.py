@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import json
-import os
 import wave
 import zipfile
 from pathlib import Path
+
+import urllib.request
 
 MODEL_DIR = Path(__file__).resolve().parent / "models"
 MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.22.zip"

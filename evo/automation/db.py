@@ -21,7 +21,15 @@ def _read() -> dict[str, Any]:
         return {}
     try:
         return json.loads(_SETTINGS_PATH.read_text(encoding="utf-8"))
-    except Exception:
+    except json.JSONDecodeError as exc:
+        import logging
+        import shutil
+
+        backup = _SETTINGS_PATH.with_suffix(".corrupt")
+        shutil.copy2(_SETTINGS_PATH, backup)
+        logging.getLogger("ziggler.settings").error(
+            "settings.json unreadable (%s); backed up to %s", exc, backup
+        )
         return {}
 
 

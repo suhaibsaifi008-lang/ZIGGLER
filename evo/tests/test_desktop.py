@@ -6,7 +6,7 @@ refuses to send keystrokes unless foreground focus is verified, and closes only
 the instance it opened."""
 import time
 
-from evo.core.action_schema import Action, GoalResult
+from evo.core.action_schema import GoalResult
 from evo.core.orchestrator import handle_goal
 
 SENTINEL = "ZIGGLER_PHASE_D_SENTINEL_7Q4"

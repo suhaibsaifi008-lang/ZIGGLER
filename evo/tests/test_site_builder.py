@@ -1,9 +1,5 @@
 """Phase F acceptance: code agent writes a function that actually compiles and
 imports; site builder scaffolds an index.html that renders."""
-import subprocess
-import sys
-import tempfile
-from pathlib import Path
 
 import pytest
 
