@@ -1,0 +1,6 @@
+{
+  "freellmapi_base_url": "http://localhost:3001/v1",
+  "freellmapi_api_key": "freellmapi-YOUR-UNIFIED-KEY",
+  "freellmapi_model": "auto",
+  "ollama_model": "qwen2.5-coder:7b"
+}

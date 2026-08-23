@@ -1,0 +1,34 @@
+{
+  "topic": "Canva",
+  "slug": "canva",
+  "created_at": 1787512168.6092818,
+  "steps": [
+    {
+      "n": 1,
+      "action": "Sign up or log in to Canva.",
+      "detail": "Access your Canva account."
+    },
+    {
+      "n": 2,
+      "action": "Select a template.",
+      "detail": "Choose a pre-designed template from Canva's library."
+    },
+    {
+      "n": 3,
+      "action": "Edit the template.",
+      "detail": "Drag and drop elements, add text, and adjust layout."
+    },
+    {
+      "n": 4,
+      "action": "Save your design.",
+      "detail": "Click 'Save' to keep your work."
+    },
+    {
+      "n": 5,
+      "action": "Export your design.",
+      "detail": "Choose the desired format and download your design."
+    }
+  ],
+  "shortcuts": [],
+  "notes": []
+}

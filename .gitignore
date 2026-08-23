@@ -1,0 +1,10 @@
+# ZIGGLER
+__pycache__/
+*.pyc
+.pytest_cache/
+evo/voice/models/
+evo/data/settings.json
+evo/data/memory.json
+*.log
+.env
+.venv/

@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ZIGGLER — Test Harness</title>
+<style>
+  :root { --bg:#0b0f14; --panel:#121821; --edge:#1f2a38; --text:#d7e2ee; --dim:#7d8fa3; --acc:#4cc2ff; --ok:#39d98a; --bad:#ff6b6b; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif; height:100vh; display:flex; flex-direction:column; }
+  header { padding:10px 18px; border-bottom:1px solid var(--edge); display:flex; gap:16px; align-items:center; }
+  header h1 { font-size:15px; letter-spacing:3px; color:var(--acc); }
+  header .status { font-size:12px; color:var(--dim); }
+  header nav button { background:none; border:1px solid var(--edge); color:var(--dim); padding:5px 12px; border-radius:6px; cursor:pointer; font-size:12px; }
+  header nav button.active { color:var(--acc); border-color:var(--acc); }
+  main { flex:1; overflow-y:auto; padding:18px; }
+  .msg { max-width:75%; margin:8px 0; padding:10px 14px; border-radius:10px; white-space:pre-wrap; word-wrap:break-word; line-height:1.45; font-size:13.5px; }
+  .user { background:#1c2c3f; margin-left:auto; }
+  .bot  { background:var(--panel); border:1px solid var(--edge); }
+  .meta { font-size:11px; color:var(--dim); margin-top:6px; }
+  footer { border-top:1px solid var(--edge); padding:12px 18px; display:flex; gap:10px; }
+  textarea { flex:1; background:var(--panel); border:1px solid var(--edge); color:var(--text); border-radius:8px; padding:10px 12px; resize:none; font:inherit; height:52px; }
+  button.send { background:var(--acc); color:#04121c; border:none; border-radius:8px; padding:0 22px; font-weight:600; cursor:pointer; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--edge); vertical-align:top; }
+  th { color:var(--acc); font-weight:600; letter-spacing:.5px; }
+  .tag { display:inline-block; background:#152232; color:var(--acc); border-radius:4px; padding:1px 7px; margin:1px 2px; font-size:11.5px; font-family:Consolas,monospace; }
+  .pill-ok { color:var(--ok); } .pill-bad { color:var(--bad); }
+  .hidden { display:none; }
+  #modelsFilter { width:100%; max-width:340px; background:var(--panel); border:1px solid var(--edge); color:var(--text); border-radius:6px; padding:6px 10px; margin-bottom:10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ZIGGLER</h1><span class="status" id="gatewayStatus">checking gateway…</span>
+  <nav style="margin-left:auto">
+    <button id="tab-chat" class="active" onclick="show('chat')">Chat</button>
+    <button id="tab-abilities" onclick="show('abilities')">Abilities</button>
+    <button id="tab-goals" onclick="show('goals')">Goal Runner</button>
+    <button id="tab-models" onclick="show('models')">Gateway Models</button>
+  </nav>
+</header>
+
+<main id="view-chat">
+  <div class="msg bot">Ziggler test harness ready. Messages go through the LLMRouter:
+FreeLLMAPI gateway → Groq → local Ollama.</div>
+  <div id="chatlog"></div>
+</main>
+
+<main id="view-abilities" class="hidden"><div id="abilities"></div></main>
+
+<main id="view-goals" class="hidden">
+  <table><tr><th>Built-in goal</th><th>Action</th></tr>
+    <tr><td>demo_browser_navigate</td><td><button onclick="runGoal('demo_browser_navigate')">Run (real Playwright + verify)</button></td></tr>
+  </table>
+  <p class="meta" style="margin-top:10px">Custom plans can be POSTed to /api/goal with a context.plan array.</p>
+  <pre id="goalResult" class="meta"></pre>
+</main>
+
+<main id="view-models" class="hidden">
+  <input id="modelsFilter" placeholder="filter models…" oninput="renderModels()">
+  <table><thead><tr><th>#</th><th>Model ID</th></tr></thead><tbody id="modelRows"></tbody></table>
+</main>
+
+<footer>
+  <textarea id="input" placeholder="Type a message for Ziggler… (Enter to send)"></textarea>
+  <button class="send" onclick="send()">Send</button>
+</footer>
+
+<script>
+let ALLMODELS = [];
+function show(tab) {
+  for (const v of ['chat','abilities','goals','models']) document.getElementById('view-'+v).classList.toggle('hidden', v!==tab);
+  for (const b of ['chat','abilities','goals','models']) document.getElementById('tab-'+b).classList.toggle('active', b===tab);
+  if (tab==='abilities') loadAbilities();
+  if (tab==='models') loadModels();
+}
+function add(kind, text, meta) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + kind;
+  d.textContent = text;
+  if (meta) { const m = document.createElement('div'); m.className='meta'; m.textContent = meta; d.appendChild(m); }
+  document.getElementById('chatlog').appendChild(d);
+  d.scrollIntoView({behavior:'smooth'});
+}
+async function send() {
+  const box = document.getElementById('input');
+  const msg = box.value.trim(); if (!msg) return;
+  box.value=''; add('user', msg);
+  const r = await fetch('/api/chat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({message: msg})});
+  const j = await r.json();
+  add('bot', j.reply || ('ERROR: ' + (j.error || r.status)), j.backend ? 'backend: '+j.backend : null);
+}
+document.getElementById('input').addEventListener('keydown', e => { if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); send(); }});
+async function loadAbilities() {
+  const j = await (await fetch('/api/abilities')).json();
+  const g = j.gateway;
+  document.getElementById('gatewayStatus').innerHTML =
+    g.reachable ? '<span class="pill-ok">● gateway live — '+g.model_count+' models</span>'
+                : '<span class="pill-bad">● gateway offline</span> '+(g.note||'');
+  let html = '<table><tr><th>Module</th><th>Status</th><th>Details</th></tr>';
+  for (const [name, info] of Object.entries(j.abilities)) {
+    html += '<tr><td><b>'+name+'</b></td><td>'+info.status+'</td><td>';
+    for (const k of ['contract','ops','verify_kinds','example_goal','chain','safety','note','endpoint']) {
+      if (info[k]) html += '<div>'+k+': '+(Array.isArray(info[k]) ? info[k].map(x=>'<span class=\"tag\">'+x+'</span>').join(' ') : '<span class=\"tag\">'+info[k]+'</span>')+'</div>';
+    }
+    html += '</td></tr>';
+  }
+  html += '</table><h3 style="margin:14px 0 8px;color:var(--acc)">HTTP API</h3><span class="tag">GET /api/health</span><span class="tag">GET /api/abilities</span><span class="tag">GET /api/models</span><span class="tag">POST /api/chat</span><span class="tag">POST /api/goal</span>';
+  html += '<p class="meta" style="margin-top:10px">FreeLLMAPI gateway also serves: streaming, tool calling, vision, embeddings, image generation, TTS, fusion (multi-model), Anthropic/Gemini/Ollama wire formats, MCP — all behind your unified key at '+g.url+'</p>';
+  document.getElementById('abilities').innerHTML = html;
+}
+async function runGoal(name) {
+  const j = await (await fetch('/api/goal', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({goal:name})})).json();
+  document.getElementById('goalResult').textContent = JSON.stringify(j, null, 2);
+}
+async function loadModels() {
+  if (!ALLMODELS.length) ALLMODELS = (await (await fetch('/api/models')).json()).models;
+  renderModels();
+}
+function renderModels() {
+  const f = document.getElementById('modelsFilter').value.toLowerCase();
+  document.getElementById('modelRows').innerHTML = ALLMODELS
+    .filter(m => m.includes(f))
+    .map((m,i) => '<tr><td>'+(i+1)+'</td><td><span class="tag">'+m+'</span></td></tr>').join('');
+}
+fetch('/api/abilities').then(r=>r.json()).then(j=>{
+  const g=j.gateway;
+  document.getElementById('gatewayStatus').innerHTML = g.reachable ? '<span class="pill-ok">● gateway live — '+g.model_count+' models</span>' : '<span class="pill-bad">● gateway offline</span>';
+}).catch(()=>{ document.getElementById('gatewayStatus').innerHTML='<span class="pill-bad">● offline</span>'; });
+</script>
+</body>
+</html>
